@@ -2,63 +2,233 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Attendance System</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Attendance System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Pacifico&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.5.0/fonts/remixicon.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#1976D2',
+                        secondary: '#64748b'
+                    },
+                    borderRadius: {
+                        'none': '0px',
+                        'sm': '4px',
+                        DEFAULT: '8px',
+                        'md': '12px',
+                        'lg': '16px',
+                        'xl': '20px',
+                        '2xl': '24px',
+                        '3xl': '32px',
+                        'full': '9999px',
+                        'button': '8px'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        :where([class^="ri-"])::before { content: "\f3c2"; }
+        .camera-container {
+            aspect-ratio: 4/3;
+            background: #000;
+        }
+        .attendance-table::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .attendance-table::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 3px;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+        }
+    </style>
 </head>
-<body class="bg-light">
-    <div class="container mt-5">
-        <h1 class="text-center mb-4">Attendance System</h1>
+<body class="bg-gray-50 min-h-screen">
+    <header class="fixed top-0 left-0 right-0 bg-white shadow-sm z-50">
+        <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <span class="text-2xl font-['Pacifico'] text-primary">logo</span>
+                <span class="text-lg font-semibold">Face Attendance</span>
+            </div>
+            <button id="loginBtn" class="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-primary transition-colors !rounded-button px-4 py-2">
+                <i class="ri-user-line w-5 h-5 flex items-center justify-center"></i>
+                <span>Login</span>
+            </button>
+        </div>
+    </header>
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
+    <main class="max-w-7xl mx-auto px-4 pt-24 pb-16">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="space-y-6">
+                <div class="bg-white rounded-lg shadow-sm p-6">
+                    <h2 class="text-lg font-semibold mb-4">Face Recognition</h2>
+                    <div class="camera-container rounded-lg mb-4 overflow-hidden">
+                        <img id="videoFeed" class="w-full h-full object-cover" src="">
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <button id="startRecognition" class="flex-1 bg-primary text-white py-2 !rounded-button hover:bg-primary/90 transition-colors cursor-pointer whitespace-nowrap">
+                            Start Recognition
+                        </button>
+                        <button id="manualLogin" class="flex-1 border border-gray-200 py-2 !rounded-button hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap">
+                            Manual Login
+                        </button>
+                    </div>
+                </div>
 
-        <h2>Today’s Attendance</h2>
-        <table class="table table-striped">
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Time</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for entry in attendance %}
-                    <tr>
-                        <td>{{ entry.Name }}</td>
-                        <td>{{ entry.Time }}</td>
-                        <td>{{ entry.Status }}</td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+                <div class="bg-white rounded-lg shadow-sm p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-lg font-semibold">Face Registration</h2>
+                        <button id="registerFace" class="text-sm text-primary hover:text-primary/90 transition-colors cursor-pointer whitespace-nowrap">
+                            Register New Face
+                        </button>
+                    </div>
+                    <div class="text-sm text-gray-500">
+                        Register your face to use the face recognition attendance system. Follow the instructions to complete registration.
+                    </div>
+                </div>
+            </div>
 
-        <h2>Attendance History</h2>
-        <ul class="list-group mb-4">
-            {% for name, count in history.items() %}
-                <li class="list-group-item">{{ name }}: {{ count }}</li>
-            {% endfor %}
-        </ul>
+            <div class="bg-white rounded-lg shadow-sm p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold">Attendance History</h2>
+                    <div class="flex items-center gap-4">
+                        <div class="relative">
+                            <input type="text" placeholder="Search records..." class="pl-8 pr-4 py-2 text-sm border border-gray-200 rounded-button focus:outline-none focus:border-primary">
+                            <i class="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 flex items-center justify-center"></i>
+                        </div>
+                        <button id="exportReport" class="text-sm text-primary hover:text-primary/90 transition-colors cursor-pointer whitespace-nowrap">
+                            Export
+                        </button>
+                    </div>
+                </div>
+                <div class="attendance-table overflow-auto max-h-[600px]">
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th class="text-left p-3 font-medium text-gray-600">Name</th>
+                                <th class="text-left p-3 font-medium text-gray-600">Time</th>
+                                <th class="text-left p-3 font-medium text-gray-600">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="attendanceTableBody">
+                            {% for record in attendance %}
+                            <tr class="border-t border-gray-100">
+                                <td class="p-3">{{ record.name }}</td>
+                                <td class="p-3">{{ record.time }}</td>
+                                <td class="p-3">
+                                    <span class="px-2 py-1 text-xs rounded-full {{ 'bg-green-50 text-green-600' if record.status == 'On Time' else 'bg-yellow-50 text-yellow-600' }}">
+                                        {{ record.status }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
 
-        <h2>Students</h2>
-        <ul class="list-group mb-4">
-            {% for student in students %}
-                <li class="list-group-item d-flex justify-content-between align-items-center">
-                    {{ student }}
-                    <a href="{{ url_for('remove_student', name=student) }}" class="btn btn-danger btn-sm">Remove</a>
-                </li>
-            {% endfor %}
-        </ul>
-
-        <div class="d-flex gap-2">
-            <a href="{{ url_for('add_student') }}" class="btn btn-primary">Add Student</a>
-            <a href="{{ url_for('configure_email') }}" class="btn btn-secondary">Configure Email</a>
+    <div id="loginModal" class="modal">
+        <div class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-white rounded-lg shadow-lg p-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold">Login</h3>
+                <button class="closeModal text-gray-400 hover:text-gray-600">
+                    <i class="ri-close-line w-6 h-6 flex items-center justify-center"></i>
+                </button>
+            </div>
+            <form id="loginForm" class="space-y-4" enctype="multipart/form-data">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                    <input type="text" name="name" class="w-full px-3 py-2 border border-gray-200 rounded-button focus:outline-none focus:border-primary" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Photo</label>
+                    <input type="file" name="photo" accept="image/*" class="w-full" required>
+                </div>
+                <button type="submit" class="w-full bg-primary text-white py-2 !rounded-button hover:bg-primary/90 transition-colors cursor-pointer whitespace-nowrap">
+                    Register
+                </button>
+            </form>
         </div>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const videoFeed = document.getElementById('videoFeed');
+            const ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onmessage = (event) => {
+                videoFeed.src = event.data;
+            };
+
+            const loginBtn = document.getElementById('loginBtn');
+            const loginModal = document.getElementById('loginModal');
+            const closeModalBtns = document.querySelectorAll('.closeModal');
+
+            loginBtn.addEventListener('click', () => {
+                loginModal.style.display = 'block';
+            });
+
+            closeModalBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    loginModal.style.display = 'none';
+                });
+            });
+
+            loginModal.addEventListener('click', (e) => {
+                if (e.target === loginModal) {
+                    loginModal.style.display = 'none';
+                }
+            });
+
+            document.getElementById('loginForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const response = await fetch('/add_student', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (response.ok) {
+                    loginModal.style.display = 'none';
+                    location.reload();
+                }
+            });
+
+            document.getElementById('startRecognition').addEventListener('click', () => {
+                // Already handled by WebSocket
+            });
+
+            document.getElementById('manualLogin').addEventListener('click', () => {
+                loginModal.style.display = 'block';
+            });
+
+            document.getElementById('registerFace').addEventListener('click', () => {
+                loginModal.style.display = 'block';
+            });
+
+            document.getElementById('exportReport').addEventListener('click', async () => {
+                const response = await fetch('/send_report', { method: 'POST' });
+                if (response.ok) {
+                    alert('Report sent successfully');
+                }
+            });
+        });
+    </script>
 </body>
 </html>

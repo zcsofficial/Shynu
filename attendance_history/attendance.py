@@ -1,7 +1,7 @@
 import cv2
 import face_recognition
 import numpy as np
-import csv
+import sqlite3
 import os
 from datetime import datetime
 import smtplib
@@ -11,18 +11,24 @@ from email.mime.base import MIMEBase
 from email import encoders
 import pyttsx3
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, flash
-import threading
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
 import logging
-from werkzeug.utils import secure_filename
+from starlette.requests import Request
+import threading
+from typing import List
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Flask app
-app = Flask(__name__)
-app.secret_key = "supersecretkey123"
+# FastAPI app
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
 # Initialize text-to-speech
 engine = pyttsx3.init()
@@ -33,7 +39,19 @@ known_face_names = []
 known_faces_dir = "known_faces"
 history_dir = "attendance_history"
 
-# Email config (custom SMTP support)
+# SQLite database setup
+def init_db():
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS students 
+                 (id INTEGER PRIMARY KEY, name TEXT UNIQUE)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS attendance 
+                 (id INTEGER PRIMARY KEY, student_name TEXT, date TEXT, time TEXT, status TEXT,
+                 FOREIGN KEY(student_name) REFERENCES students(name))''')
+    conn.commit()
+    conn.close()
+
+# Email config
 email_config = {
     "smtp_server": "smtp.hostinger.com",
     "smtp_port": 587,
@@ -43,54 +61,38 @@ email_config = {
 }
 
 def load_faces():
-    """Load student faces from known_faces directory."""
+    """Load student faces from known_faces directory and database."""
     global known_face_encodings, known_face_names
     known_face_encodings = []
     known_face_names = []
-    try:
-        for filename in os.listdir(known_faces_dir):
-            if filename.lower().endswith((".jpg", ".png")):
-                path = os.path.join(known_faces_dir, filename)
-                image = face_recognition.load_image_file(path)
-                encodings = face_recognition.face_encodings(image)
-                if encodings:  # Ensure at least one face is detected
-                    known_face_encodings.append(encodings[0])
-                    known_face_names.append(filename.split(".")[0])
-                    logger.info(f"Loaded face: {filename}")
-                else:
-                    logger.warning(f"No face detected in {filename}")
-    except Exception as e:
-        logger.error(f"Error loading faces: {e}")
+    
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+    c.execute("SELECT name FROM students")
+    known_face_names = [row[0] for row in c.fetchall()]
+    conn.close()
 
-load_faces()
-all_students = known_face_names.copy()
+    for name in known_face_names:
+        filename = f"{name}.jpg"
+        path = os.path.join(known_faces_dir, filename)
+        if os.path.exists(path):
+            image = face_recognition.load_image_file(path)
+            encodings = face_recognition.face_encodings(image)
+            if encodings:
+                known_face_encodings.append(encodings[0])
+                logger.info(f"Loaded face: {name}")
+            else:
+                logger.warning(f"No face detected in {filename}")
 
 def run_attendance():
     """Run the attendance system with camera."""
     try:
-        # Try multiple camera indices as fallback
-        for i in range(3):  # Try 0, 1, 2
-            video_capture = cv2.VideoCapture(i)
-            if video_capture.isOpened():
-                break
-        else:
+        video_capture = cv2.VideoCapture(0)
+        if not video_capture.isOpened():
             logger.error("No camera found!")
             return
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        csv_file = f"attendance_{today}.csv"
         cutoff_time = "09:00:00"
-
-        if not os.path.exists(history_dir):
-            os.makedirs(history_dir)
-
-        csv_path = os.path.join(history_dir, csv_file)
-        with open(csv_path, "a", newline="") as file:
-            writer = csv.writer(file)
-            if os.stat(csv_path).st_size == 0:
-                writer.writerow(["Name", "Time", "Status"])
-
-        logger.info("Camera started. Press 'q' to quit.")
         detected_names = set()
 
         while True:
@@ -117,10 +119,16 @@ def run_attendance():
 
                 if name != "Unknown" and name not in detected_names:
                     current_time = datetime.now().strftime("%H:%M:%S")
+                    current_date = datetime.now().strftime("%Y-%m-%d")
                     status = "On Time" if current_time <= cutoff_time else "Late"
-                    with open(csv_path, "a", newline="") as file:
-                        writer = csv.writer(file)
-                        writer.writerow([name, current_time, status])
+                    
+                    conn = sqlite3.connect('attendance.db')
+                    c = conn.cursor()
+                    c.execute("INSERT INTO attendance (student_name, date, time, status) VALUES (?, ?, ?, ?)",
+                            (name, current_date, current_time, status))
+                    conn.commit()
+                    conn.close()
+                    
                     detected_names.add(name)
                     logger.info(f"{name} marked as {status} at {current_time}")
                     engine.say(f"Welcome, {name}")
@@ -130,120 +138,113 @@ def run_attendance():
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-        # Generate report
-        present = detected_names
-        absent = [name for name in all_students if name not in present]
-        report_file = f"report_{today}.txt"
-        with open(report_file, "w") as report:
-            report.write(f"Date: {today}\nPresent: {len(present)}\nAbsent: {len(absent)}\n")
-            report.write(f"Present: {', '.join(present)}\nAbsent: {', '.join(absent)}")
-        logger.info("Report generated")
-
-        # Email
-        msg = MIMEMultipart()
-        msg["From"] = email_config["sender_email"]
-        msg["To"] = email_config["receiver_email"]
-        msg["Subject"] = f"Attendance for {today}"
-        msg.attach(MIMEText("Attendance file and report attached.", "plain"))
-
-        for file_path in [csv_path, report_file]:
-            with open(file_path, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(file_path)}")
-                msg.attach(part)
-
-        try:
-            with smtplib.SMTP(email_config["smtp_server"], email_config["smtp_port"]) as server:
-                server.starttls()
-                server.login(email_config["sender_email"], email_config["password"])
-                server.sendmail(email_config["sender_email"], email_config["receiver_email"], msg.as_string())
-            logger.info("Attendance emailed")
-        except Exception as e:
-            logger.error(f"Email failed: {e}")
-
-        # History
-        attendance_data = {}
-        for file in os.listdir(history_dir):
-            if file.endswith(".csv"):
-                try:
-                    df = pd.read_csv(os.path.join(history_dir, file))
-                    if "Name" in df.columns:
-                        for name in df["Name"].dropna():
-                            attendance_data[name] = attendance_data.get(name, 0) + 1
-                except Exception as e:
-                    logger.error(f"Error reading {file}: {e}")
-
-        with open("history_summary.txt", "w") as f:
-            f.write(f"Attendance History as of {today}:\n")
-            for name, count in attendance_data.items():
-                f.write(f"{name}: {count} days\n")
-        logger.info("History updated")
-
         video_capture.release()
         cv2.destroyAllWindows()
 
     except Exception as e:
         logger.error(f"Attendance system failed: {e}")
 
-# Web routes
-@app.route("/")
-def index():
+# API endpoints
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+    
     today = datetime.now().strftime("%Y-%m-%d")
-    csv_file = os.path.join(history_dir, f"attendance_{today}.csv")
-    history_data = {}
-    attendance_today = []
+    c.execute("SELECT student_name, time, status FROM attendance WHERE date = ?", (today,))
+    attendance_today = [{"name": row[0], "time": row[1], "status": row[2]} for row in c.fetchall()]
+    
+    c.execute("SELECT student_name, COUNT(*) as count FROM attendance GROUP BY student_name")
+    history_data = dict(c.fetchall())
+    
+    c.execute("SELECT name FROM students")
+    all_students = [row[0] for row in c.fetchall()]
+    
+    conn.close()
+    
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "attendance": attendance_today,
+        "history": history_data,
+        "students": all_students
+    })
 
-    if os.path.exists("history_summary.txt"):
-        with open("history_summary.txt", "r") as f:
-            history_data = dict(line.strip().split(": ") for line in f.readlines() if ": " in line)
+@app.post("/add_student")
+async def add_student(name: str = Form(...), photo: UploadFile = File(...)):
+    filename = f"{name}.jpg"
+    file_path = os.path.join(known_faces_dir, filename)
+    with open(file_path, "wb") as f:
+        f.write(await photo.read())
+    
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO students (name) VALUES (?)", (name,))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Student already exists")
+    conn.close()
+    
+    load_faces()
+    return {"message": "Student added successfully"}
 
-    if os.path.exists(csv_file):
-        try:
-            df = pd.read_csv(csv_file)
-            attendance_today = df.to_dict("records")
-        except Exception as e:
-            logger.error(f"Error reading today’s CSV: {e}")
+@app.get("/remove_student/{name}")
+async def remove_student(name: str):
+    file_path = os.path.join(known_faces_dir, f"{name}.jpg")
+    if os.path.exists(file_path):
+        os.remove(file_path)
+    
+    conn = sqlite3.connect('attendance.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM students WHERE name = ?", (name,))
+    conn.commit()
+    conn.close()
+    
+    load_faces()
+    return {"message": "Student removed successfully"}
 
-    return render_template("index.html", attendance=attendance_today, history=history_data, students=all_students)
+@app.post("/send_report")
+async def send_report():
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect('attendance.db')
+    df = pd.read_sql_query("SELECT * FROM attendance WHERE date = ?", conn, params=(today,))
+    conn.close()
 
-@app.route("/add_student", methods=["GET", "POST"])
-def add_student():
-    if request.method == "POST":
-        name = request.form["name"]
-        photo = request.files["photo"]
-        if name and photo:
-            filename = secure_filename(f"{name}.jpg")
-            photo.save(os.path.join(known_faces_dir, filename))
-            load_faces()
-            all_students.append(name)
-            flash("Student added successfully!", "success")
-            return redirect(url_for("index"))
-    return render_template("add_student.html")
+    csv_file = f"attendance_{today}.csv"
+    df.to_csv(csv_file, index=False)
+    
+    present = df['student_name'].tolist()
+    absent = [name for name in known_face_names if name not in present]
+    
+    report_file = f"report_{today}.txt"
+    with open(report_file, "w") as report:
+        report.write(f"Date: {today}\nPresent: {len(present)}\nAbsent: {len(absent)}\n")
+        report.write(f"Present: {', '.join(present)}\nAbsent: {', '.join(absent)}")
 
-@app.route("/remove_student/<name>")
-def remove_student(name):
-    if name in all_students:
-        all_students.remove(name)
-        file_path = os.path.join(known_faces_dir, f"{name}.jpg")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        load_faces()
-        flash("Student removed successfully!", "success")
-    return redirect(url_for("index"))
+    msg = MIMEMultipart()
+    msg["From"] = email_config["sender_email"]
+    msg["To"] = email_config["receiver_email"]
+    msg["Subject"] = f"Attendance for {today}"
+    msg.attach(MIMEText("Attendance file and report attached.", "plain"))
 
-@app.route("/configure_email", methods=["GET", "POST"])
-def configure_email():
-    if request.method == "POST":
-        email_config["smtp_server"] = request.form["smtp_server"]
-        email_config["smtp_port"] = int(request.form["smtp_port"])
-        email_config["sender_email"] = request.form["sender_email"]
-        email_config["password"] = request.form["password"]
-        email_config["receiver_email"] = request.form["receiver_email"]
-        flash("Email settings updated!", "success")
-        return redirect(url_for("index"))
-    return render_template("configure_email.html", config=email_config)
+    for file_path in [csv_file, report_file]:
+        with open(file_path, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(file_path)}")
+            msg.attach(part)
+
+    try:
+        with smtplib.SMTP(email_config["smtp_server"], email_config["smtp_port"]) as server:
+            server.starttls()
+            server.login(email_config["sender_email"], email_config["password"])
+            server.sendmail(email_config["sender_email"], email_config["receiver_email"], msg.as_string())
+        logger.info("Attendance emailed")
+        return {"message": "Report sent successfully"}
+    except Exception as e:
+        logger.error(f"Email failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send email")
 
 # Run everything
 if __name__ == "__main__":
@@ -251,7 +252,16 @@ if __name__ == "__main__":
     for dir_name in [known_faces_dir, history_dir]:
         if not os.path.exists(dir_name):
             os.makedirs(dir_name)
+    if not os.path.exists("templates"):
+        os.makedirs("templates")
+    if not os.path.exists("static"):
+        os.makedirs("static")
+    
+    init_db()
+    load_faces()
     
     # Start attendance in a thread
     threading.Thread(target=run_attendance, daemon=True).start()
-    app.run(debug=True, host="0.0.0.0", port=5000, use_reloader=False)  # Disable reloader to avoid duplicate threads
+    
+    # Run with Uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=5000)
